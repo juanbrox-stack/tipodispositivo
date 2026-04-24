@@ -4,110 +4,92 @@ from fuzzywuzzy import process
 import io
 import re
 
-# Configuración visual de la página
-st.set_page_config(page_title="Mapeador Pro", layout="wide", page_icon="🎯")
+st.set_page_config(page_title="Mapeador de Dispositivos", layout="wide")
 
-st.title("🎯 Optimizador de Mapeo de Dispositivos")
-st.markdown("""
-Esta herramienta analiza tus SKUs y encuentra el **único tipo de dispositivo más parecido** basándose en un listado de referencia.
-""")
-
-# --- BARRA LATERAL PARA PARÁMETROS ---
-st.sidebar.header("Configuración")
-umbral = st.sidebar.slider(
-    "Umbral de precisión (Score)", 
-    min_value=0, 
-    max_value=100, 
-    value=80,
-    help="Sube el valor para coincidencias más exactas, bájalo si quieres ser más flexible."
-)
+st.title("🎯 Mapeador Ultra-Rápido")
 
 # --- CARGA DE ARCHIVOS ---
-col1, col2 = st.columns(2)
+col_file1, col_file2 = st.columns(2)
+with col_file1:
+    file_tipos = st.file_uploader("Archivo con Tipos (Columna F)", type=['xlsx'])
+with col_file2:
+    file_sku = st.file_uploader("Archivo de SKUs (Col. A y B)", type=['xlsx'])
 
-with col1:
-    st.subheader("1. Referencia de Tipos")
-    file_tipos = st.file_uploader("Subir Excel con Tipos (Columna F)", type=['xlsx'], key="tipos")
-    st.caption("Se buscarán los tipos en la columna F separados por ',' o ';'")
+c1, c2, c3 = st.columns([1, 2, 1])
+with c2:
+    umbral = st.slider("Umbral de similitud", 0, 100, 80)
 
-with col2:
-    st.subheader("2. Archivo de SKUs")
-    file_sku = st.file_uploader("Subir Excel de SKUs (Col. A y B)", type=['xlsx'], key="skus")
-    st.caption("Col A: SKU | Col B: Texto para comparar")
-
-# --- PROCESAMIENTO ---
 if file_tipos and file_sku:
-    try:
-        # Cargar DataFrames
-        df_tipos_raw = pd.read_excel(file_tipos)
-        df_sku_raw = pd.read_excel(file_sku)
+    if st.button("🚀 Ejecutar Mapeo Rápido", use_container_width=True):
+        try:
+            df_tipos_raw = pd.read_excel(file_tipos)
+            df_sku_raw = pd.read_excel(file_sku)
 
-        if st.button("🚀 Iniciar Mapeo de Coincidencia Única"):
-            
-            # PASO 1: Aplanar la lista de tipos
-            # Extraemos cada palabra individual de la columna F
-            st.info("Analizando y desglosando lista de tipos...")
-            lista_tipos_unificados = []
-            
-            # Suponemos columna F (índice 5)
-            col_f_datos = df_tipos_raw.iloc[:, 5].dropna().astype(str)
-            
-            for celda in col_f_datos:
-                # Separar por comas o punto y coma usando regex
+            # 1. Preparar lista de tipos únicos
+            lista_tipos = []
+            for celda in df_tipos_raw.iloc[:, 5].dropna().astype(str):
                 partes = re.split(r'[;,]', celda)
-                for p in partes:
-                    limpio = p.strip()
-                    if limpio:
-                        lista_tipos_unificados.append(limpio)
-            
-            # Eliminar duplicados para optimizar búsqueda
-            lista_tipos_unificados = list(set(lista_tipos_unificados))
-            
-            # PASO 2: Función de Match Único
-            def buscar_mejor_match(texto_usuario):
-                if pd.isna(texto_usuario) or str(texto_usuario).strip() == "":
-                    return "Sin datos"
+                lista_tipos.extend([p.strip() for p in partes if p.strip()])
+            lista_tipos = list(set(lista_tipos))
+
+            # 2. DICCIONARIO DE CACHÉ (La clave de la velocidad)
+            cache_mapeo = {}
+
+            def match_optimizado(texto):
+                texto = str(texto).strip()
+                if not texto or texto == "nan": return "Sin datos"
                 
-                # fuzzywuzzy devuelve (resultado, puntuación)
-                resultado = process.extractOne(str(texto_usuario), lista_tipos_unificados)
+                # Si ya calculamos este texto antes, devolver el resultado guardado
+                if texto in cache_mapeo:
+                    return cache_mapeo[texto]
                 
+                # Si hay coincidencia exacta, es instantáneo
+                if texto in lista_tipos:
+                    cache_mapeo[texto] = texto
+                    return texto
+
+                # Solo si lo anterior falla, usamos Fuzzy (lo lento)
+                resultado = process.extractOne(texto, lista_tipos)
                 if resultado:
                     match, score = resultado
-                    return match if score >= umbral else "Sin coincidencia"
-                return "Sin coincidencia"
-
-            # PASO 3: Ejecutar mapeo
-            with st.spinner('Comparando SKUs contra tipos individuales...'):
-                # Creamos el DataFrame final con 2 columnas como pediste
-                df_final = pd.DataFrame()
-                df_final['SKU'] = df_sku_raw.iloc[:, 0] # Columna A
-                # Buscamos el match individual para la columna B
-                df_final['Tipo de Dispositivo'] = df_sku_raw.iloc[:, 1].apply(buscar_mejor_match)
-
-            # --- RESULTADOS Y DESCARGA ---
-            st.success("¡Mapeo finalizado!")
-            
-            col_res1, col_res2 = st.columns([2, 1])
-            
-            with col_res1:
-                st.write("### Vista previa (20 primeras filas)")
-                st.dataframe(df_final.head(20), use_container_width=True)
-            
-            with col_res2:
-                st.write("### Exportar")
-                # Crear Excel en memoria
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_final.to_excel(writer, index=False, sheet_name='Mapeo_Unico')
+                    final = match if score >= umbral else "Sin coincidencia"
+                else:
+                    final = "Sin coincidencia"
                 
-                st.download_button(
-                    label="📥 Descargar Resultado (Excel)",
-                    data=buffer.getvalue(),
-                    file_name="mapeo_dispositivos_final.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                # Guardar en caché para la próxima vez que aparezca este texto
+                cache_mapeo[texto] = final
+                return final
 
-    except Exception as e:
-        st.error(f"Se produjo un error: {e}")
-else:
-    st.warning("Por favor, sube ambos archivos para comenzar.")
+            # 3. Procesamiento
+            with st.spinner('Procesando con optimización de caché...'):
+                # Extraemos las columnas A (SKU) y B (Nombre para comparar)
+                sku_col = df_sku_raw.iloc[:, 4] # Según tu archivo es la E (index 4) o cámbialo a 0
+                nombre_col = df_sku_raw.iloc[:, 1] # Columna B (index 1)
+                
+                resultados = []
+                # Barra de progreso real
+                progreso = st.progress(0)
+                total = len(df_sku_raw)
+                
+                for i, valor in enumerate(nombre_col):
+                    resultados.append(match_optimizado(valor))
+                    if i % 100 == 0: progreso.progress(i / total)
+                progreso.empty()
+
+                df_final = pd.DataFrame({
+                    'SKU': sku_col,
+                    'Tipo de Dispositivo': resultados
+                })
+
+            st.success(f"¡Hecho! Se procesaron {len(df_sku_raw)} filas rápidamente gracias a la caché.")
+            st.dataframe(df_final.head(50), use_container_width=True)
+
+            # Botón de descarga
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_final.to_excel(writer, index=False)
+            
+            st.download_button("📥 Descargar Resultado", output.getvalue(), "mapeo_rapido.xlsx")
+
+        except Exception as e:
+            st.error(f"Error: {e}")
